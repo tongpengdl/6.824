@@ -6,11 +6,30 @@ import (
 	"net/http"
 	"net/rpc"
 	"os"
+	"time"
 )
 
-type Coordinator struct {
-	// Your definitions here.
+type TaskStatus int
 
+const (
+	TaskStatusIdle TaskStatus = iota
+	TaskStatusInProgress
+	TaskStatusCompleted
+)
+
+type TaskDetail struct {
+	Task      Task
+	Status    TaskStatus
+	StartTime time.Time
+}
+
+type Coordinator struct {
+	MapTasks    []TaskDetail
+	ReduceTasks []TaskDetail
+
+	NReduce int
+	// Reduce should start after all Map tasks are completed
+	CurrentPhase TaskType
 }
 
 // Your code here -- RPC handlers for the worker to call.
@@ -51,9 +70,24 @@ func (c *Coordinator) Done() bool {
 // main/mrcoordinator.go calls this function.
 // nReduce is the number of reduce tasks to use.
 func MakeCoordinator(files []string, nReduce int) *Coordinator {
-	c := Coordinator{}
+	c := Coordinator{
+		NReduce:      nReduce,
+		CurrentPhase: TaskTypeMap,
+		MapTasks:     make([]TaskDetail, len(files)),
+		ReduceTasks:  make([]TaskDetail, nReduce),
+	}
 
-	// Your code here.
+	for i, filename := range files {
+		c.MapTasks[i] = TaskDetail{
+			Task: Task{
+				Type:     TaskTypeMap,
+				Filename: filename,
+				TaskNum:  i,
+				NReduce:  nReduce,
+			},
+			Status: TaskStatusIdle,
+		}
+	}
 
 	c.server()
 	return &c
