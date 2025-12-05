@@ -44,14 +44,15 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 	if c.CurrentPhase == TaskTypeMap {
 		// hand over map tasks if any idle
 		for i := range c.MapTasks {
-			if c.MapTasks[i].Status == TaskStatusIdle {
+			switch c.MapTasks[i].Status {
+			case TaskStatusIdle:
 				c.MapTasks[i].Status = TaskStatusInProgress
 				c.MapTasks[i].StartTime = time.Now()
 				reply.Task = c.MapTasks[i].Task
 				return nil
-			} else if c.MapTasks[i].Status == TaskStatusCompleted {
+			case TaskStatusCompleted:
 				completed_map_tasks++
-			} else if c.MapTasks[i].Status == TaskStatusInProgress {
+			case TaskStatusInProgress:
 				// check for timeout and reassign
 				if time.Since(c.MapTasks[i].StartTime) > 10*time.Second {
 					log.Printf("Reassigning map task %d\n", c.MapTasks[i].Task.TaskNum)
@@ -74,14 +75,15 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 		completed_reduce_tasks := 0
 		// hand over reduce tasks if any idle
 		for i := range c.ReduceTasks {
-			if c.ReduceTasks[i].Status == TaskStatusIdle {
+			switch c.ReduceTasks[i].Status {
+			case TaskStatusIdle:
 				c.ReduceTasks[i].Status = TaskStatusInProgress
 				c.ReduceTasks[i].StartTime = time.Now()
 				reply.Task = c.ReduceTasks[i].Task
 				return nil
-			} else if c.ReduceTasks[i].Status == TaskStatusCompleted {
+			case TaskStatusCompleted:
 				completed_reduce_tasks++
-			} else if c.ReduceTasks[i].Status == TaskStatusInProgress {
+			case TaskStatusInProgress:
 				// check for timeout and reassign
 				if time.Since(c.ReduceTasks[i].StartTime) > 10*time.Second {
 					log.Printf("Reassigning reduce task %d\n", c.ReduceTasks[i].Task.TaskNum)
@@ -97,12 +99,56 @@ func (c *Coordinator) RequestTask(args *RequestTaskArgs, reply *RequestTaskReply
 			return nil
 		}
 		// All tasks are done
+		c.CurrentPhase = TaskTypeExit
 		reply.Task = Task{Type: TaskTypeExit}
 		return nil
 	}
-
+	reply.Task = Task{Type: TaskTypeExit}
 	return nil
+}
 
+func (c *Coordinator) ReportTaskCompletion(args *Task, reply *struct{}) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	switch args.Type {
+	case TaskTypeMap:
+		if c.MapTasks[args.TaskNum].Status != TaskStatusCompleted {
+			c.MapTasks[args.TaskNum].Status = TaskStatusCompleted
+			log.Printf("Map task %d completed\n", args.TaskNum)
+		}
+		// Advance to reduce phase once all maps finish.
+		if c.CurrentPhase == TaskTypeMap {
+			allMapsDone := true
+			for i := range c.MapTasks {
+				if c.MapTasks[i].Status != TaskStatusCompleted {
+					allMapsDone = false
+					break
+				}
+			}
+			if allMapsDone {
+				c.CurrentPhase = TaskTypeReduce
+			}
+		}
+	case TaskTypeReduce:
+		if c.ReduceTasks[args.TaskNum].Status != TaskStatusCompleted {
+			c.ReduceTasks[args.TaskNum].Status = TaskStatusCompleted
+			log.Printf("Reduce task %d completed\n", args.TaskNum)
+		}
+		// Mark job done once all reduces finish.
+		if c.CurrentPhase == TaskTypeReduce {
+			allReducesDone := true
+			for i := range c.ReduceTasks {
+				if c.ReduceTasks[i].Status != TaskStatusCompleted {
+					allReducesDone = false
+					break
+				}
+			}
+			if allReducesDone {
+				c.CurrentPhase = TaskTypeExit
+			}
+		}
+	}
+	return nil
 }
 
 // an example RPC handler.
@@ -130,11 +176,9 @@ func (c *Coordinator) server() {
 // main/mrcoordinator.go calls Done() periodically to find out
 // if the entire job has finished.
 func (c *Coordinator) Done() bool {
-	ret := false
-
-	// Your code here.
-
-	return ret
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.CurrentPhase == TaskTypeExit
 }
 
 // create a Coordinator.
@@ -162,7 +206,7 @@ func MakeCoordinator(files []string, nReduce int) *Coordinator {
 
 	// Prepare reduce tasks: each reduce worker will read mr-MapID-ReduceID
 	// files for its ReduceID across all maps.
-	for i := 0; i < nReduce; i++ {
+	for i := range nReduce {
 		c.ReduceTasks[i] = TaskDetail{
 			Task: Task{
 				Type:    TaskTypeReduce,
