@@ -31,7 +31,6 @@ type Task struct {
 }
 
 type RequestTaskArgs struct {
-	WorkerID int
 }
 
 type RequestTaskReply struct {

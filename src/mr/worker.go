@@ -28,8 +28,20 @@ func Worker(mapf func(string, string) []KeyValue,
 	// Your worker implementation here.
 
 	// uncomment to send the Example RPC to the coordinator.
-	CallExample()
+	GetTask()
 
+}
+
+func GetTask() {
+	args := RequestTaskArgs{}
+	reply := RequestTaskReply{}
+
+	ok := call("Coordinator.RequestTask", &args, &reply)
+	if ok {
+		log.Printf("Received task: %+v\n", reply.Task)
+	} else {
+		log.Printf("GetTask RPC call failed\n")
+	}
 }
 
 // example function to show how to make an RPC call to the coordinator.
