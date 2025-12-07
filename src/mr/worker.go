@@ -1,10 +1,13 @@
 package mr
 
 import (
+	"encoding/json"
 	"fmt"
 	"hash/fnv"
 	"log"
 	"net/rpc"
+	"os"
+	"sort"
 )
 
 // Map functions return a slice of KeyValue.
@@ -28,19 +31,118 @@ func Worker(mapf func(string, string) []KeyValue,
 	// Your worker implementation here.
 
 	// uncomment to send the Example RPC to the coordinator.
-	GetTask()
+	task := GetTask()
+	switch task.Type {
+	case TaskTypeMap:
+		log.Printf("Starting Map Task %d on file %s\n", task.TaskNum, task.Filename)
+		// Read input file
+		content, err := os.ReadFile(task.Filename)
+		if err != nil {
+			log.Fatalf("cannot read %v", task.Filename)
+		}
+		// Call Map function
+		kva := mapf(task.Filename, string(content))
 
+		// Partition kva into nReduce intermediate files
+		buckets := make([][]KeyValue, task.NReduce)
+		for _, kv := range kva {
+			reduceTaskNum := ihash(kv.Key) % task.NReduce
+			buckets[reduceTaskNum] = append(buckets[reduceTaskNum], kv)
+		}
+
+		// Write intermediate files
+		for i := 0; i < task.NReduce; i++ {
+			intermediateFilename := fmt.Sprintf("mr-%d-%d", task.TaskNum, i)
+			file, err := os.Create(intermediateFilename)
+			if err != nil {
+				log.Fatalf("cannot create %v", intermediateFilename)
+			}
+			enc := json.NewEncoder(file)
+			for _, kv := range buckets[i] {
+				if err := enc.Encode(&kv); err != nil {
+					log.Fatalf("cannot encode kv pair %v", kv)
+				}
+			}
+			file.Close()
+		}
+		log.Printf("Completed Map Task %d\n", task.TaskNum)
+		ReportTaskCompletion(task)
+	case TaskTypeReduce:
+		log.Printf("Starting Reduce Task %d\n", task.TaskNum)
+		// Read intermediate files
+		intermediate := []KeyValue{}
+		for i := 0; i < task.NMap; i++ {
+			intermediateFilename := fmt.Sprintf("mr-%d-%d", i, task.TaskNum)
+			file, err := os.Open(intermediateFilename)
+			if err != nil {
+				log.Fatalf("cannot open %v", intermediateFilename)
+			}
+			dec := json.NewDecoder(file)
+			for {
+				var kv KeyValue
+				if err := dec.Decode(&kv); err != nil {
+					break
+				}
+				intermediate = append(intermediate, kv)
+			}
+			file.Close()
+		}
+
+		// Sort intermediate key-value pairs by key
+		sort.Slice(intermediate, func(i, j int) bool {
+			return intermediate[i].Key < intermediate[j].Key
+		})
+
+		// Create output file
+		outputFilename := fmt.Sprintf("mr-out-%d", task.TaskNum)
+		outputFile, err := os.Create(outputFilename)
+		if err != nil {
+			log.Fatalf("cannot create %v", outputFilename)
+		}
+
+		// Apply Reduce function
+		i := 0
+		for i < len(intermediate) {
+			j := i + 1
+			for j < len(intermediate) && intermediate[j].Key == intermediate[i].Key {
+				j++
+			}
+			values := []string{}
+			for k := i; k < j; k++ {
+				values = append(values, intermediate[k].Value)
+			}
+			reducedValue := reducef(intermediate[i].Key, values)
+			fmt.Fprintf(outputFile, "%v %v\n", intermediate[i].Key, reducedValue)
+			i = j
+		}
+		outputFile.Close()
+		log.Printf("Completed Reduce Task %d\n", task.TaskNum)
+		ReportTaskCompletion(task)
+	default:
+		log.Printf("Received unknown task type: %v\n", task.Type)
+	}
 }
 
-func GetTask() {
+func GetTask() *Task {
 	args := RequestTaskArgs{}
 	reply := RequestTaskReply{}
 
 	ok := call("Coordinator.RequestTask", &args, &reply)
 	if ok {
 		log.Printf("Received task: %+v\n", reply.Task)
+		return &reply.Task
 	} else {
 		log.Printf("GetTask RPC call failed\n")
+		return nil
+	}
+}
+
+func ReportTaskCompletion(task *Task) {
+	ok := call("Coordinator.ReportTaskCompletion", task, &struct{}{})
+	if ok {
+		log.Printf("Reported completion of task %d\n", task.TaskNum)
+	} else {
+		log.Printf("ReportTaskCompletion RPC call failed\n")
 	}
 }
 
